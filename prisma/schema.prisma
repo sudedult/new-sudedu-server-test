@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                       Int                     @id @default(autoincrement())
+  username                 String                  @unique
+  emailVerified            Boolean                 @default(false)
+  password                 String
+  accType                  String
+  nickname                 String
+  lastLogIn                DateTime?
+  tokenVersion             Int                     @default(0)  // ADD THIS
+  assignedTasksAsStudent   StudentTaskAssignment[] @relation("StudentAssignedTasks")
+  teacherStudentsAsStudent TeacherStudent?         @relation("StudentToTeacher")
+  teacherStudentsAsTeacher TeacherStudent[]        @relation("TeacherToStudents")
+  assignedTasksAsTeacher   TeacherTask[]           @relation("TeacherAssignedTasks")
+  studentInfo              StudentInfo?            @relation("UserStudentInfo")
+  petGame                  PetGame?                @relation("UserPetGame")
+  refreshTokens            RefreshToken[]          // ADD THIS
+}
+
+model RefreshToken {
+  id         Int       @id @default(autoincrement())
+  token      String    @unique
+  userId     Int
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+model TeacherStudent {
+  id        Int  @id @default(autoincrement())
+  teacherId Int
+  studentId Int  @unique
+  student   User @relation("StudentToTeacher", fields: [studentId], references: [id])
+  teacher   User @relation("TeacherToStudents", fields: [teacherId], references: [id])
+}
+
+model TeacherTask {
+  id              Int                     @id @default(autoincrement())
+  group           String
+  task            String
+  duration        String
+  teacherId       Int
+  taskLibraryId   Int
+  studentTasks    StudentTaskAssignment[] @relation("TaskAssignedToStudents")
+  teacher         User                    @relation("TeacherAssignedTasks", fields: [teacherId], references: [id])
+  taskLibrary     TaskLibrary             @relation("TaskLibraryToTeacherTasks", fields: [taskLibraryId], references: [id]) // 👈 add relation name
+}
+
+model TaskLibrary {
+  id         Int           @id @default(autoincrement())
+  taskInfo   String        @unique
+  tasks      TeacherTask[] @relation("TaskLibraryToTeacherTasks")
+}
+
+model StudentTaskAssignment {
+  id             Int         @id @default(autoincrement())
+  studentId      Int
+  taskId         Int
+  status         Boolean
+  result         String
+  completionDate DateTime?
+  student        User        @relation("StudentAssignedTasks", fields: [studentId], references: [id])
+  task           TeacherTask @relation("TaskAssignedToStudents", fields: [taskId], references: [id])
+
+  @@unique([studentId, taskId])
+}
+
+model StudentInfo {
+  id            Int      @id @default(autoincrement())
+  studentId     Int      @unique
+  stats         String   @default("{\"c\": [], \"m\": [], \"t\": [], \"g\": [], \"d\": null}")
+  avatar        String   @default("w63060003")
+  weekChlId     Int?
+  knowledgeLvl  Int      @default(-1)
+  weekChlScore  Int      @default(0)
+  weekChlWinner Int      @default(0)
+
+  student User @relation("UserStudentInfo", fields: [studentId], references: [id], map: "studentinfo_user_fk")
+  weekChl WeekChl? @relation(fields: [weekChlId], references: [id], map: "studentinfo_weekchl_fk")
+}
+
+model PetGame {
+  id           Int      @id @default(autoincrement())
+  studentId    Int      @unique
+  money        Decimal  @default(0.0)
+  objectAssets String   @default("[]")
+  petAssets    String   @default("[[], []]")
+  petStats     String   @default("{}")
+  taxes        String   @default("[]")
+  petOnWalk    String   @default("")
+  messaged     MessageGift[] @relation("PetGameMessageGifts")
+
+  student User @relation("UserPetGame", fields: [studentId], references: [id], map: "petgame_user_fk")
+}
+
+model ChlLibrary {
+  id                  Int       @id @default(autoincrement())
+  taskInfo            String
+  personalChlDuration String
+  weekChlDuration     String    @default("[\"C39\",\"5\"]")
+  challengeType       String
+  class               Int
+  period              String
+  weekChls            WeekChl[] @relation("ChlLibraryToWeekChls")
+
+  @@index([class, period])
+}
+
+model WeekChl {
+  id           Int          @id @default(autoincrement())
+  students     StudentInfo[]
+  date         DateTime?
+  chlLibraryId Int?
+  chlLibrary   ChlLibrary?  @relation("ChlLibraryToWeekChls", fields: [chlLibraryId], references: [id], onDelete: Cascade)
+}
+
+model MessageGift {
+  id             Int       @id @default(autoincrement())
+  message        String
+  giftId         Int?      
+  quantity       Int       @default(1)
+  giftExpiration DateTime
+  petGames       PetGame[] @relation("PetGameMessageGifts")
+}

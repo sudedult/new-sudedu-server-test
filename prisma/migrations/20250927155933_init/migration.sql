@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "PetGame" ALTER COLUMN "petOnWalk" SET DEFAULT '',
+ALTER COLUMN "petOnWalk" SET DATA TYPE TEXT;
