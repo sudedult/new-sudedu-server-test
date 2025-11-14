@@ -187,7 +187,7 @@ router.post('/register', async (req, res) => {
     if (existingUser) {
       if (!existingUser.emailVerified) {
         const token = jwt.sign({ userId: existingUser.id }, process.env.EMAIL_SECRET, { expiresIn: '1d' });
-        const link = `http://127.0.0.1:5500/front-end-with-pet-game/LT/verify-email.html?token=${token}`;
+        const link = `https://www.sudedu.lt/test/LT/verify-email.html?token=${token}`;
         await sendEmail(username, 'Verify your email', `<a href="${link}">Verify your account</a>`);
         return res.json({ code: CODES.REG_RESEND });
       } else {
@@ -226,7 +226,7 @@ router.post('/register', async (req, res) => {
     }
 
     const token = jwt.sign({ userId: user.id }, process.env.EMAIL_SECRET, { expiresIn: '1h' });
-    const link = `http://127.0.0.1:5500/front-end-with-pet-game/LT/verify-email.html?token=${token}`;
+    const link = `https://www.sudedu.lt/test/LT/verify-email.html?token=${token}`;
     const emailBodyVerify = `
       <!DOCTYPE html>
       <html>
@@ -288,7 +288,7 @@ router.post('/resend-verification', async (req, res) => {
     if (!user) return res.status(404).json({ code: CODES.VERIFY_NOT_FOUND });
 
     const token = jwt.sign({ userId: user.id }, process.env.EMAIL_SECRET, { expiresIn: '1d' });
-    const link = `http://127.0.0.1:5500/front-end-with-pet-game/LT/verify-email.html?token=${token}`;
+    const link = `https://www.sudedu.lt/test/LT/verify-email.html?token=${token}`;
     const emailBodyVerify = `
       <!DOCTYPE html>
       <html>
@@ -332,7 +332,7 @@ router.post('/forgot-password', async (req, res) => {
     if (!user) return res.status(404).json({ code: CODES.RESET_NOT_FOUND });
 
     const token = jwt.sign({ userId: user.id }, process.env.RESET_SECRET, { expiresIn: '15m' });
-    const link = `http://127.0.0.1:5500/front-end-with-pet-game/LT/reset-password.html?token=${token}`;
+    const link = `https://www.sudedu.lt/test/LT/reset-password.html?token=${token}`;
 
     const emailBodyForgotPassword = `
       <!DOCTYPE html>
