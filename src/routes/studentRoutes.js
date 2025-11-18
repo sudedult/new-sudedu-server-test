@@ -29,10 +29,15 @@ router.get('/', async (req, res) => {
     });
 
   const updatedInfos = await Promise.all(
-    students.map(studentRel => 
-      updateStudentStats(studentRel.student.id, null, 'c', null)
-    )
+      students.map(studentRel => updateStudentStats(studentRel.student.id, null, 'c', null))
   );
+
+  // Log errors but continue
+  updatedInfos.forEach(info => {
+      if (info?.error) {
+          console.error(`Error updating student ${info.userId}: ${info.error}`);
+      }
+  });
 
   const studentDetails = students.map((studentRel, index) => {
     const student = studentRel.student;  // ← ADD THIS LINE
@@ -254,8 +259,12 @@ router.post('/updateStudentStats', async (req, res) => {
       };
     }
 
-    // Update stats
-    await updateStudentStats(studentId, data, statType, testDate);
+    const result = await updateStudentStats(studentId, data, statType, testDate);
+
+    if (result?.error) {
+        console.error(`Error updating student ${result.userId}: ${result.error}`);
+        return res.status(404).json({ error: 'Student info not found' });
+    }
 
     // Update coins in PetGame
     if (coins && coins > 0) {
@@ -328,7 +337,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
     });
 
     if (!studentInfo) {
-      throw new Error(`StudentInfo not found for user ${userId}`);
+        return { error: 'STUDENT_INFO_NOT_FOUND', userId };
     }
 
     // STEP 2: Parse the stats JSON from database

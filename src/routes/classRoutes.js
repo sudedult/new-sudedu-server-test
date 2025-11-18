@@ -172,7 +172,11 @@ router.post('/updateStudentStats', async (req, res) => {
     return res.status(400).json({ success: false, error: "Missing userId" });
   }
 
-  await manageWeeklyChallenge(userId)
+  const weeklyChlResult = await manageWeeklyChallenge(userId);
+
+  if (!weeklyChlResult.success) {
+    return res.status(400).json(weeklyChlResult);
+  }
 
   try {
     const requesterId = req.body.studentId;
@@ -422,7 +426,8 @@ async function manageWeeklyChallenge(requestingUserId) {
         });
 
         if (!requestingUser) {
-          throw new Error(`User not found: ${requestingUserId}`);
+          console.error(`User not found: ${requestingUserId}`);
+          return { success: false, message: 'User not found' };
         }
 
         // Determine if user is teacher or student
@@ -703,7 +708,7 @@ async function createNewChallenge(tx, teacherId, studentIds, allStudents) {
       });
       
       if (fallbackTasks.length === 0) {
-        throw new Error(`No challenges found for knowledge level ${medianKnowledgeLvl}`);
+        return { success: false, error: 'NO_CHALLENGES', knowledgeLvl: medianKnowledgeLvl };
       }
       
       const randomTask = fallbackTasks[Math.floor(Math.random() * fallbackTasks.length)];
@@ -716,8 +721,8 @@ async function createNewChallenge(tx, teacherId, studentIds, allStudents) {
     return await createWeekChlEntry(tx, randomTask.id, studentIds);
 
   } catch (error) {
-    console.error('Error creating new challenge:', error);
-    throw error;
+    console.error('Error createNewChallenge:', error);
+    return { success: false, error: 'FUNCTION_FAILED', message: error.message };
   }
 }
 
@@ -842,7 +847,7 @@ async function processExpiredChallenge(tx, teacherId, studentIds, allStudents, o
 
   } catch (error) {
     console.error('Error processing expired challenge:', error);
-    throw error;
+    return { success: false, error: 'PROCESS_EXPIRED_FAILED', message: error.message };
   }
 }
 

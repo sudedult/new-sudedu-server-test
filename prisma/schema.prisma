@@ -94,6 +94,7 @@ model PetGame {
   id           Int      @id @default(autoincrement())
   studentId    Int      @unique
   money        Decimal  @default(0.0)
+  roomLayout   Int      @default(1)
   objectAssets String   @default("[]")
   petAssets    String   @default("[[], []]")
   petStats     String   @default("{}")

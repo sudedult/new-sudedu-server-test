@@ -756,7 +756,7 @@ async function populateChlLibrary() {
 
   } catch (error) {
     console.error('Fatal error during population:', error);
-    throw error;
+    return error;
   } finally {
     await prisma.$disconnect();
   }
