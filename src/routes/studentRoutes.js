@@ -45,6 +45,7 @@ router.get('/', async (req, res) => {
 
     return {
       id: student.id,
+      username: student.username,
       nickname: student.nickname,
       stats: updatedInfo.stats ? JSON.parse(updatedInfo.stats) : {},
       knowledgeLvl: updatedInfo.knowledgeLvl ?? -1,
