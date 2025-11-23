@@ -94,37 +94,59 @@ router.post('/petAssets', async (req, res) => {
   }
 })
 
-// Update money
-router.post('/money', async (req, res) => {
-  const { studentId, money } = req.body
-  if (!studentId || money === undefined) return res.sendStatus(400)
 
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: studentId },
-      include: { petGame: true }
-    })
-    if (!user) return res.sendStatus(404)
-
-    // Round to 1 decimal
-    const roundedMoney = Math.round(Number(money) * 10) / 10;
-
-    if (user.petGame) {
-      await prisma.petGame.update({
-        where: { studentId: user.id },
-        data: { money: roundedMoney }
-      })
-    } else {
-      await prisma.petGame.create({
-        data: { studentId: user.id, money: roundedMoney }
-      })
+router.post('/transaction', async (req, res) => {
+    const { studentId, amount, type } = req.body
+    if (!studentId || amount === undefined || !type) return res.sendStatus(400)
+    
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: studentId },
+            include: { petGame: true }
+        })
+        
+        if (!user) return res.sendStatus(404)
+        
+        // Convert Prisma Decimal to number
+        const currentMoney = user.petGame?.money ? Number(user.petGame.money) : 0
+        const roundedAmount = Math.round(Number(amount) * 10) / 10
+        
+        // Calculate new balance
+        let newMoney
+        if (type === 'subtract') {
+            if (currentMoney < roundedAmount) {
+                return res.status(400).json({ error: 'insufficient_funds' })
+            }
+            newMoney = currentMoney - roundedAmount
+        } else if (type === 'add') {
+            newMoney = currentMoney + roundedAmount
+        } else {
+            return res.sendStatus(400)
+        }
+        
+        // Round to 1 decimal place to avoid floating point issues
+        newMoney = Math.round(newMoney * 10) / 10
+        
+        // Update money
+        if (user.petGame) {
+            await prisma.petGame.update({
+                where: { studentId: user.id },
+                data: { money: newMoney }
+            })
+        } else {
+            await prisma.petGame.create({
+                data: { 
+                    studentId: user.id, 
+                    money: newMoney 
+                }
+            })
+        }
+        
+        res.sendStatus(204)
+    } catch (err) {
+        console.error(err)
+        res.sendStatus(500)
     }
-
-    res.sendStatus(204)
-  } catch (err) {
-    console.error(err)
-    res.sendStatus(500)
-  }
 })
 
 router.post('/petStats', async (req, res) => {

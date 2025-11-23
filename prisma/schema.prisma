@@ -16,14 +16,15 @@ model User {
   accType                  String
   nickname                 String
   lastLogIn                DateTime?
-  tokenVersion             Int                     @default(0)  // ADD THIS
+  tokenVersion             Int                     @default(0)
   assignedTasksAsStudent   StudentTaskAssignment[] @relation("StudentAssignedTasks")
   teacherStudentsAsStudent TeacherStudent?         @relation("StudentToTeacher")
   teacherStudentsAsTeacher TeacherStudent[]        @relation("TeacherToStudents")
   assignedTasksAsTeacher   TeacherTask[]           @relation("TeacherAssignedTasks")
   studentInfo              StudentInfo?            @relation("UserStudentInfo")
   petGame                  PetGame?                @relation("UserPetGame")
-  refreshTokens            RefreshToken[]          // ADD THIS
+  refreshTokens            RefreshToken[]
+  taskResultArchives       TaskResultArchive[]     @relation("UserTaskResultArchives")          
 }
 
 model RefreshToken {
@@ -58,9 +59,10 @@ model TeacherTask {
 }
 
 model TaskLibrary {
-  id         Int           @id @default(autoincrement())
-  taskInfo   String        @unique
-  tasks      TeacherTask[] @relation("TaskLibraryToTeacherTasks")
+  id                    Int                   @id @default(autoincrement())
+  taskInfo              String                @unique
+  tasks                 TeacherTask[]         @relation("TaskLibraryToTeacherTasks")
+  taskResultArchives    TaskResultArchive[]   @relation("TaskLibraryTaskResultArchives")
 }
 
 model StudentTaskAssignment {
@@ -93,7 +95,7 @@ model StudentInfo {
 model PetGame {
   id           Int      @id @default(autoincrement())
   studentId    Int      @unique
-  money        Decimal  @default(0.0)
+  money        Decimal  @default(0.0) @db.Decimal(8,1)
   roomLayout   Int      @default(1)
   objectAssets String   @default("[]")
   petAssets    String   @default("[[], []]")
@@ -124,6 +126,21 @@ model WeekChl {
   date         DateTime?
   chlLibraryId Int?
   chlLibrary   ChlLibrary?  @relation("ChlLibraryToWeekChls", fields: [chlLibraryId], references: [id], onDelete: Cascade)
+}
+
+model TaskResultArchive {
+  id             Int        @id @default(autoincrement())
+  studentId      Int
+  taskLibraryId  Int
+  correct        Int        @db.SmallInt @default(0)
+  mistakes       Int        @db.SmallInt @default(0)
+  totalAnswers   Int        @db.SmallInt @default(0)
+  answerRate     Float      @db.Real     @default(0)
+  date           DateTime   @db.Date
+  student        User        @relation("UserTaskResultArchives", fields: [studentId], references: [id])
+  taskLibrary    TaskLibrary @relation("TaskLibraryTaskResultArchives", fields: [taskLibraryId], references: [id])
+
+  @@unique([studentId, taskLibraryId, date])
 }
 
 model MessageGift {

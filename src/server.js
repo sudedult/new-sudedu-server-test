@@ -1,4 +1,5 @@
 import express from 'express'
+import authMiddleware from './middleware/authMiddleware.js';
 import authRoutes from './routes/authRoutes.js'
 import studentRoutes from './routes/studentRoutes.js'
 import tasksRoutes from './routes/tasksRoutes.js'
@@ -7,14 +8,12 @@ import adminRoutes from './routes/adminRoutes.js'
 import petGameRoutes from './routes/petGameRoutes.js'
 import classRoutes from './routes/classRoutes.js'
 import cors from 'cors'
-import authMiddleware from './middleware/authMiddleware.js';
 
 const app = express();
 const PORT = process.env.PORT || 5003;
 
 app.use(cors())
 app.use(express.json());
-
 
 app.use('/auth', authRoutes);
 app.use('/students', authMiddleware, studentRoutes);

@@ -536,6 +536,244 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
   // ========== END TRANSACTION ==========
 }
 
+router.post('/long-term', async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { records } = req.body;
+    
+    if (!records || !Array.isArray(records)) {
+      return res.sendStatus(400); // Bad Request
+    }
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Process each record
+    for (const record of records) {
+      const { taskInfo, correct, mistakes, totalAnswers, answerRate } = record;
+      
+      if (!taskInfo || 
+          correct === null || correct === undefined || isNaN(correct) || correct < 0 ||
+          mistakes === null || mistakes === undefined || isNaN(mistakes) || mistakes < 0 ||
+          totalAnswers === null || totalAnswers === undefined || isNaN(totalAnswers) || totalAnswers < 0 ||
+          answerRate === null || answerRate === undefined || isNaN(answerRate) || answerRate < 0) {
+        console.warn('Skipping record with invalid data:', record);
+        continue;
+      }
+
+      // Find or create task in library
+      const taskLibrary = await prisma.taskLibrary.upsert({
+        where: { taskInfo: JSON.stringify(taskInfo) },
+        update: {},
+        create: { taskInfo: JSON.stringify(taskInfo) },
+      });
+
+      // Check if record exists for today
+      const existing = await prisma.taskResultArchive.findUnique({
+        where: {
+          studentId_taskLibraryId_date: {
+            studentId: userId,
+            taskLibraryId: taskLibrary.id,
+            date: today,
+          },
+        },
+      });
+
+      if (existing) {
+        // Update existing record
+        await prisma.taskResultArchive.update({
+          where: {
+            studentId_taskLibraryId_date: {
+              studentId: userId,
+              taskLibraryId: taskLibrary.id,
+              date: today,
+            },
+          },
+          data: {
+            correct: existing.correct + correct,
+            mistakes: existing.mistakes + mistakes,
+            totalAnswers: existing.totalAnswers + totalAnswers,
+            answerRate: (existing.answerRate + answerRate) / 2,
+          },
+        });
+      } else {
+        // Create new record
+        await prisma.taskResultArchive.create({
+          data: {
+            studentId: userId,
+            taskLibraryId: taskLibrary.id,
+            correct,
+            mistakes,
+            totalAnswers,
+            answerRate,
+            date: today,
+          },
+        });
+      }
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error(err);
+    return res.sendStatus(500);
+  }
+});
+
+
+router.get('/task-stats/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { taskInfo, skipAverages } = req.query;
+    const teacherId = req.user?.id;
+
+    if (!studentId || !taskInfo) {
+      return res.sendStatus(400);
+    }
+
+    const taskLibrary = await prisma.taskLibrary.findUnique({
+      where: { taskInfo: taskInfo }
+    });
+
+    if (!taskLibrary) {
+      return res.json({
+        studentDates: [],
+        mistakeFrequency: [],
+        answerRate: [],
+        averageDates: [],
+        averageMistakeFrequency: [],
+        averageAnswerRate: []
+      });
+    }
+
+    const studentResults = await prisma.taskResultArchive.findMany({
+      where: {
+        studentId: parseInt(studentId),
+        taskLibraryId: taskLibrary.id
+      },
+      orderBy: { date: 'asc' },
+      select: {
+        date: true,
+        correct: true,
+        mistakes: true,
+        totalAnswers: true,
+        answerRate: true
+      }
+    });
+
+    const graphData = {
+      studentDates: [],
+      mistakeFrequency: [],
+      answerRate: [],
+      averageDates: [],
+      averageMistakeFrequency: [],
+      averageAnswerRate: []
+    };
+
+    if (studentResults.length === 0) {
+      // If no student data but not skipping averages, still calculate class averages
+      if (skipAverages !== "true") {
+        await calculateClassAverages(teacherId, taskLibrary.id, graphData);
+      }
+      return res.json(graphData);
+    }
+
+    // Process student's individual data
+    studentResults.forEach(result => {
+      graphData.studentDates.push(result.date.toISOString().split('T')[0]);
+
+      const mistakeFreq = result.totalAnswers > 0
+        ? Math.round((result.mistakes / result.totalAnswers) * 100)
+        : 0;
+
+      graphData.mistakeFrequency.push(mistakeFreq);
+      graphData.answerRate.push(result.answerRate);
+    });
+
+    // Skip average processing if frontend has cached them
+    if (skipAverages === "true") {
+      return res.json(graphData);
+    }
+
+    // Calculate class averages across ALL dates (not just student's dates)
+    await calculateClassAverages(teacherId, taskLibrary.id, graphData);
+
+    return res.json(graphData);
+
+  } catch (err) {
+    console.error(err);
+    return res.sendStatus(500);
+  }
+});
+
+// Helper function to calculate class averages
+async function calculateClassAverages(teacherId, taskLibraryId, graphData) {
+  const teacherStudentRelations = await prisma.teacherStudent.findMany({
+    where: { teacherId: teacherId },
+    select: { studentId: true }
+  });
+
+  const studentIds = teacherStudentRelations.map(ts => ts.studentId);
+
+  const allResults = await prisma.taskResultArchive.findMany({
+    where: {
+      studentId: { in: studentIds },
+      taskLibraryId: taskLibraryId
+    },
+    orderBy: { date: 'asc' },
+    select: {
+      date: true,
+      mistakes: true,
+      totalAnswers: true,
+      answerRate: true
+    }
+  });
+
+  const dateMap = new Map();
+
+  allResults.forEach(result => {
+    const dateStr = result.date.toISOString().split('T')[0];
+
+    if (!dateMap.has(dateStr)) {
+      dateMap.set(dateStr, {
+        mistakeFrequencies: [],
+        answerRates: []
+      });
+    }
+
+    const mistakeFreq = result.totalAnswers > 0
+      ? Math.round((result.mistakes / result.totalAnswers) * 100)
+      : 0;
+
+    dateMap.get(dateStr).mistakeFrequencies.push(mistakeFreq);
+    dateMap.get(dateStr).answerRates.push(result.answerRate);
+  });
+
+  // Convert map to sorted arrays for ALL dates with class data
+  const sortedDates = Array.from(dateMap.keys()).sort();
+
+  sortedDates.forEach(date => {
+    const data = dateMap.get(date);
+
+    const avgMistakeFreq = data.mistakeFrequencies.length > 0
+      ? Math.round(
+          data.mistakeFrequencies.reduce((a, b) => a + b, 0) /
+          data.mistakeFrequencies.length
+        )
+      : 0;
+
+    const avgAnswerRate = data.answerRates.length > 0
+      ? Number(
+          (
+            data.answerRates.reduce((a, b) => a + b, 0) /
+            data.answerRates.length
+          ).toFixed(1)
+        )
+      : 0;
+
+    graphData.averageDates.push(date);
+    graphData.averageMistakeFrequency.push(avgMistakeFreq);
+    graphData.averageAnswerRate.push(avgAnswerRate);
+  });
+}
 
 export default router
