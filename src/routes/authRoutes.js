@@ -155,7 +155,7 @@ async function getUserData(userId) {
     emailVerified: user.emailVerified,
     petOnWalk: petOnWalk,
     petStats: petStats,
-    knowledgeLvl: knowledgeLvl, // ← ADD THIS
+    knowledgeLvl: knowledgeLvl,
     tokenVersion: user.tokenVersion
   };
 }
@@ -188,7 +188,10 @@ router.post('/register', async (req, res) => {
       if (!existingUser.emailVerified) {
         const token = jwt.sign({ userId: existingUser.id }, process.env.EMAIL_SECRET, { expiresIn: '1d' });
         const link = `https://www.sudedu.lt/test/LT/verify-email.html?token=${token}`;
-        await sendEmail(username, 'Verify your email', `<a href="${link}">Verify your account</a>`);
+        const emailSent = await sendEmail(username, 'Verify your email', `<a href="${link}">Verify your account</a>`);
+        if (!emailSent) {
+          return res.status(500).json({ code: CODES.ERROR_SERVER, message: 'Failed to send email' });
+        }
         return res.json({ code: CODES.REG_RESEND });
       } else {
         return res.status(400).json({ code: CODES.REG_EXISTS });
@@ -241,7 +244,11 @@ router.post('/register', async (req, res) => {
       </html>
     `
 
-    await sendEmail(username, 'El. pašto adreso patvirtinimas', emailBodyVerify);
+    const emailSent = await sendEmail(username, 'El. pašto adreso patvirtinimas', emailBodyVerify);
+
+    if (!emailSent) {
+      return res.status(500).json({ code: CODES.ERROR_SERVER, message: 'Failed to send email' });
+    }
 
     res.json({ code: CODES.REG_SUCCESS });
   } catch (err) {
@@ -302,7 +309,11 @@ router.post('/resend-verification', async (req, res) => {
 
       </html>
     `
-    await sendEmail(username, 'El. pašto adreso patvirtinimas', emailBodyVerify);
+    const emailSent = await sendEmail(username, 'El. pašto adreso patvirtinimas', emailBodyVerify);
+
+    if (!emailSent) {
+      return res.status(500).json({ code: CODES.ERROR_SERVER, message: 'Failed to send email' });
+    }
 
     res.json({ code: CODES.REG_RESEND });
   } catch (err) {
@@ -348,7 +359,12 @@ router.post('/forgot-password', async (req, res) => {
       </html>
     `
 
-    await sendEmail(username, 'Paskyros slaptažodžio keitimas', emailBodyForgotPassword);
+    const emailSent = await sendEmail(username, 'Paskyros slaptažodžio keitimas', emailBodyForgotPassword);
+
+    if (!emailSent) {
+      return res.status(500).json({ code: CODES.ERROR_SERVER, message: 'Failed to send email' });
+    }
+
     res.json({ code: CODES.RESET_SENT });
   } catch (err) {
     console.error(err);

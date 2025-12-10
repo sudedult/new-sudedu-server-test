@@ -266,18 +266,18 @@ router.post('/updateStudentStats', async (req, res) => {
   }
 });
 
-router.post('/updateNickname', async (req, res) => {
+router.patch('/updateNickname', async (req, res) => {
     try {
-        const { userId, newNickname } = req.body;
+        const { studentId, nickname } = req.body;
 
-        if (!userId || !newNickname || newNickname.trim() === '') {
+        if (!studentId || !nickname || nickname.trim() === '') {
             return res.status(400).json({ error: 'User ID and valid nickname are required' });
         }
 
         // Update user in database
         await prisma.user.update({
-            where: { id: userId },
-            data: { nickname: newNickname.trim() },
+            where: { id: studentId },
+            data: { nickname: nickname.trim() },
             select: { id: true, nickname: true }
         });
 

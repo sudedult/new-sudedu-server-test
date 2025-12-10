@@ -13,18 +13,18 @@ export async function sendEmail(to, subject, html) {
   try {
     const gmail = google.gmail({ version: "v1", auth: oAuth2Client });
 
-    // Encode subject to UTF-8 for Gmail
-    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`;
+    // Force refresh access token if needed
+    await oAuth2Client.getAccessToken();
 
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`;
     const messageParts = [
       `From: ${process.env.EMAIL_SENDER}`,
       `To: ${to}`,
       `Subject: ${encodedSubject}`,
       "Content-Type: text/html; charset=UTF-8",
       "",
-      html,
+      html
     ];
-
     const message = messageParts.join("\n");
     const encodedMessage = Buffer.from(message)
       .toString("base64")
@@ -34,11 +34,14 @@ export async function sendEmail(to, subject, html) {
 
     await gmail.users.messages.send({
       userId: "me",
-      requestBody: { raw: encodedMessage },
+      requestBody: { raw: encodedMessage }
     });
 
     console.log(`✅ Email sent to ${to}`);
+    return true;
   } catch (err) {
     console.error("❌ Email send failed:", err);
+    return false; // do not throw, just return failure
   }
 }
+

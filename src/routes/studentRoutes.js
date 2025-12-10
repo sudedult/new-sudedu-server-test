@@ -71,17 +71,32 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
     try {
-        const teacherId = parseInt(req.body.teacherId, 10);
+        const teacherIdentifier = req.body.teacherId; // Can be ID or email
         const studentId = req.userId;
 
-        // Check if the teacher exists and has the correct accType
-        const teacher = await prisma.user.findUnique({
-            where: { id: teacherId }
-        });
+        // Try to find teacher by ID first (if it's a number), then by email (username)
+        let teacher;
+        const parsedId = parseInt(teacherIdentifier, 10);
+        
+        if (!isNaN(parsedId)) {
+            // If it's a valid number, search by ID
+            teacher = await prisma.user.findUnique({
+                where: { id: parsedId }
+            });
+        }
+        
+        // If not found by ID or not a number, try searching by email (username)
+        if (!teacher) {
+            teacher = await prisma.user.findUnique({
+                where: { username: teacherIdentifier }
+            });
+        }
 
         if (!teacher || teacher.accType !== 'teacher') {
             return res.status(400).json({ error: 'Invalid teacher ID' });
         }
+
+        const teacherId = teacher.id;
 
         // Check if the student already has a teacher (using studentId which is unique)
         const existingRelation = await prisma.teacherStudent.findUnique({
@@ -118,20 +133,34 @@ router.post('/', async (req, res) => {
     }
 });
 
-
 router.put('/', async (req, res) => {
     try {
-        const newTeacherId = parseInt(req.body.teacherId, 10);
+        const teacherIdentifier = req.body.teacherId; // Can be ID or email
         const studentId = req.userId;
 
-        // Check if the new teacher exists and has the correct accType
-        const newTeacher = await prisma.user.findUnique({
-            where: { id: newTeacherId }
-        });
+        // Try to find teacher by ID first (if it's a number), then by email (username)
+        let newTeacher;
+        const parsedId = parseInt(teacherIdentifier, 10);
+        
+        if (!isNaN(parsedId)) {
+            // If it's a valid number, search by ID
+            newTeacher = await prisma.user.findUnique({
+                where: { id: parsedId }
+            });
+        }
+        
+        // If not found by ID or not a number, try searching by email (username)
+        if (!newTeacher) {
+            newTeacher = await prisma.user.findUnique({
+                where: { username: teacherIdentifier }
+            });
+        }
 
         if (!newTeacher || newTeacher.accType !== 'teacher') {
             return res.status(400).json({ error: 'Invalid teacher ID' });
         }
+
+        const newTeacherId = newTeacher.id;
 
         // Find the student's current teacher relationship
         const currentRelation = await prisma.teacherStudent.findUnique({
@@ -403,7 +432,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
         const targetArray = stats[statType];
         if (targetArray.length > 0) {
           const lastEntry = targetArray[targetArray.length - 1];
-          lastEntry[0] += data.points || 0;
+          lastEntry[0] = Math.round((lastEntry[0] + (data.points || 0)) * 100) / 100;
           lastEntry[1] += data.correctAnswers || 0;
           lastEntry[2] += data.mistakes || 0;
           lastEntry[3] += data.totalAnswers || 0;
@@ -433,7 +462,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
 
       if (stats.c.length > 0 && missedDays > 0) {
         stats.c[stats.c.length - 1] -= (missedDays / 7);
-        stats.c[stats.c.length - 1] = Math.max(0, stats.c[stats.c.length - 1]);
+        stats.c[stats.c.length - 1] = Math.round(Math.max(0, stats.c[stats.c.length - 1]) * 100) / 100;
       }
 
       // If student is adding data, update the stats for current week
@@ -441,7 +470,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
         const targetArray = stats[statType];
         if (targetArray.length > 0) {
           const lastEntry = targetArray[targetArray.length - 1];
-          lastEntry[0] += data.points || 0;
+          lastEntry[0] = Math.round((lastEntry[0] + (data.points || 0)) * 100) / 100;
           lastEntry[1] += data.correctAnswers || 0;
           lastEntry[2] += data.mistakes || 0;
           lastEntry[3] += data.totalAnswers || 0;
@@ -455,7 +484,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
         const lastDayOfWeek = getDayOfWeek(stats.d, WEEK_STARTS_ON);
         const daysLeftInOldWeek = 7 - lastDayOfWeek;
         stats.c[stats.c.length - 1] -= (daysLeftInOldWeek / 7);
-        stats.c[stats.c.length - 1] = Math.max(0, stats.c[stats.c.length - 1]);
+        stats.c[stats.c.length - 1] = Math.round(Math.max(0, stats.c[stats.c.length - 1]) * 100) / 100;
       }
 
       // STEP 7.2: Handle rolling window if at capacity
@@ -500,7 +529,7 @@ async function updateStudentStats(userId, data = null, statType = 'c', testDate 
       // If data is not null (student), today is being recorded, so exclude it
       const daysMissedThisWeek = data !== null ? (dayOfWeek - 1) : dayOfWeek;
       const newWeekConsistency = 1 - (daysMissedThisWeek / 7);
-      stats.c.push(Math.max(0, newWeekConsistency));
+      stats.c.push(Math.round(Math.max(0, newWeekConsistency) * 100) / 100);
 
       // Add new stat entries
       const newWeekStatTypes = ['m', 't', 'g'];
@@ -623,18 +652,47 @@ router.post('/long-term', async (req, res) => {
 router.get('/task-stats/:studentId', async (req, res) => {
   try {
     const { studentId } = req.params;
-    const { taskInfo, skipAverages } = req.query;
+    const { taskInfoList, skipAverages } = req.query;
     const teacherId = req.user?.id;
 
-    if (!studentId || !taskInfo) {
+    if (!studentId || !taskInfoList) {
       return res.sendStatus(400);
     }
 
-    const taskLibrary = await prisma.taskLibrary.findUnique({
-      where: { taskInfo: taskInfo }
+    // Parse the task list (expecting JSON array)
+    let taskInfoArray;
+    try {
+      taskInfoArray = JSON.parse(taskInfoList);
+      if (!Array.isArray(taskInfoArray) || taskInfoArray.length === 0) {
+        return res.sendStatus(400);
+      }
+    } catch (e) {
+      return res.sendStatus(400);
+    }
+
+    // Get ALL tasks from the library (we'll filter in memory)
+    const allTaskLibraries = await prisma.taskLibrary.findMany({
+      select: {
+        id: true,
+        taskInfo: true
+      }
     });
 
-    if (!taskLibrary) {
+    // Filter tasks by comparing parsed JSON content
+    const taskLibraries = allTaskLibraries.filter(task => {
+      try {
+        const storedTaskInfo = JSON.parse(task.taskInfo);
+        // Check if this stored task matches any of the requested tasks
+        return taskInfoArray.some(requestedTask => {
+          // Compare as strings after re-stringifying to normalize format
+          return JSON.stringify(storedTaskInfo) === JSON.stringify(requestedTask);
+        });
+      } catch (e) {
+        return false;
+      }
+    });
+
+    if (taskLibraries.length === 0) {
       return res.json({
         studentDates: [],
         mistakeFrequency: [],
@@ -645,10 +703,13 @@ router.get('/task-stats/:studentId', async (req, res) => {
       });
     }
 
+    const taskLibraryIds = taskLibraries.map(t => t.id);
+
+    // Get all student results for ALL specified tasks
     const studentResults = await prisma.taskResultArchive.findMany({
       where: {
         studentId: parseInt(studentId),
-        taskLibraryId: taskLibrary.id
+        taskLibraryId: { in: taskLibraryIds }
       },
       orderBy: { date: 'asc' },
       select: {
@@ -669,33 +730,20 @@ router.get('/task-stats/:studentId', async (req, res) => {
       averageAnswerRate: []
     };
 
-    if (studentResults.length === 0) {
-      // If no student data but not skipping averages, still calculate class averages
-      if (skipAverages !== "true") {
-        await calculateClassAverages(teacherId, taskLibrary.id, graphData);
-      }
-      return res.json(graphData);
-    }
-
-    // Process student's individual data
+    // Process student's individual data across all tasks
     studentResults.forEach(result => {
       graphData.studentDates.push(result.date.toISOString().split('T')[0]);
-
-      const mistakeFreq = result.totalAnswers > 0
-        ? Math.round((result.mistakes / result.totalAnswers) * 100)
+      const mistakeFreq = result.totalAnswers > 0 
+        ? Math.round((result.mistakes / result.totalAnswers) * 100) 
         : 0;
-
       graphData.mistakeFrequency.push(mistakeFreq);
       graphData.answerRate.push(result.answerRate);
     });
 
-    // Skip average processing if frontend has cached them
-    if (skipAverages === "true") {
-      return res.json(graphData);
+    // Calculate class averages for ALL tasks combined (not filtered to student range)
+    if (skipAverages !== "true") {
+      await calculateClassAveragesForTasks(teacherId, taskLibraryIds, graphData);
     }
-
-    // Calculate class averages across ALL dates (not just student's dates)
-    await calculateClassAverages(teacherId, taskLibrary.id, graphData);
 
     return res.json(graphData);
 
@@ -705,8 +753,9 @@ router.get('/task-stats/:studentId', async (req, res) => {
   }
 });
 
-// Helper function to calculate class averages
-async function calculateClassAverages(teacherId, taskLibraryId, graphData) {
+// REPLACE YOUR ENTIRE calculateClassAverages FUNCTION WITH THIS:
+
+async function calculateClassAveragesForTasks(teacherId, taskLibraryIds, graphData) {
   const teacherStudentRelations = await prisma.teacherStudent.findMany({
     where: { teacherId: teacherId },
     select: { studentId: true }
@@ -714,66 +763,150 @@ async function calculateClassAverages(teacherId, taskLibraryId, graphData) {
 
   const studentIds = teacherStudentRelations.map(ts => ts.studentId);
 
+  // Get ALL task results for ALL specified tasks from ALL students in the class
   const allResults = await prisma.taskResultArchive.findMany({
     where: {
       studentId: { in: studentIds },
-      taskLibraryId: taskLibraryId
+      taskLibraryId: { in: taskLibraryIds }
     },
     orderBy: { date: 'asc' },
     select: {
       date: true,
       mistakes: true,
       totalAnswers: true,
-      answerRate: true
+      answerRate: true,
+      studentId: true
     }
   });
 
-  const dateMap = new Map();
+  if (allResults.length === 0) return;
 
-  allResults.forEach(result => {
-    const dateStr = result.date.toISOString().split('T')[0];
+  // Convert all results to a more workable format
+  const dataPoints = allResults.map(result => ({
+    date: result.date,
+    timestamp: result.date.getTime(),
+    mistakeFreq: result.totalAnswers > 0 
+      ? (result.mistakes / result.totalAnswers) * 100 
+      : 0,
+    answerRate: result.answerRate,
+    studentId: result.studentId
+  }));
 
-    if (!dateMap.has(dateStr)) {
-      dateMap.set(dateStr, {
-        mistakeFrequencies: [],
-        answerRates: []
+  // Get all unique dates where ANY student completed ANY of these tasks
+  const allDates = [...new Set(dataPoints.map(dp => 
+    dp.date.toISOString().split('T')[0]
+  ))].sort();
+
+  // Configuration
+  const WINDOW_DAYS = 7;
+  const MIN_DATA_POINTS = 2;
+  const TIME_DECAY_FACTOR = 0.15;
+
+  // Calculate weighted moving average for EVERY date in the dataset
+  const globalAverages = {
+    dates: [],
+    mistakeFrequency: [],
+    answerRate: []
+  };
+
+  allDates.forEach(dateStr => {
+    const targetDate = new Date(dateStr);
+    const targetTimestamp = targetDate.getTime();
+    const windowMs = WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+    // Find all data points within the window
+    const windowData = dataPoints.filter(dp => {
+      const timeDiff = Math.abs(dp.timestamp - targetTimestamp);
+      return timeDiff <= windowMs;
+    });
+
+    if (windowData.length < MIN_DATA_POINTS) return;
+
+    // Group by student to avoid one student dominating the average
+    const studentDataMap = new Map();
+    windowData.forEach(dp => {
+      if (!studentDataMap.has(dp.studentId)) {
+        studentDataMap.set(dp.studentId, []);
+      }
+      studentDataMap.get(dp.studentId).push(dp);
+    });
+
+    // Calculate per-student average, then average across students
+    let weightedMistakeSum = 0;
+    let weightedAnswerRateSum = 0;
+    let totalWeight = 0;
+
+    studentDataMap.forEach((studentPoints) => {
+      let studentWeightedMistake = 0;
+      let studentWeightedAnswerRate = 0;
+      let studentTotalWeight = 0;
+
+      studentPoints.forEach(dp => {
+        const daysDiff = Math.abs(dp.timestamp - targetTimestamp) / (24 * 60 * 60 * 1000);
+        const weight = Math.exp(-TIME_DECAY_FACTOR * daysDiff);
+
+        studentWeightedMistake += dp.mistakeFreq * weight;
+        studentWeightedAnswerRate += dp.answerRate * weight;
+        studentTotalWeight += weight;
       });
+
+      if (studentTotalWeight > 0) {
+        const studentAvgMistake = studentWeightedMistake / studentTotalWeight;
+        const studentAvgAnswerRate = studentWeightedAnswerRate / studentTotalWeight;
+
+        weightedMistakeSum += studentAvgMistake;
+        weightedAnswerRateSum += studentAvgAnswerRate;
+        totalWeight += 1;
+      }
+    });
+
+    if (totalWeight > 0) {
+      const avgMistakeFreq = Math.round(weightedMistakeSum / totalWeight);
+      const avgAnswerRate = Number((weightedAnswerRateSum / totalWeight).toFixed(1));
+
+      globalAverages.dates.push(dateStr);
+      globalAverages.mistakeFrequency.push(avgMistakeFreq);
+      globalAverages.answerRate.push(avgAnswerRate);
     }
-
-    const mistakeFreq = result.totalAnswers > 0
-      ? Math.round((result.mistakes / result.totalAnswers) * 100)
-      : 0;
-
-    dateMap.get(dateStr).mistakeFrequencies.push(mistakeFreq);
-    dateMap.get(dateStr).answerRates.push(result.answerRate);
   });
 
-  // Convert map to sorted arrays for ALL dates with class data
-  const sortedDates = Array.from(dateMap.keys()).sort();
+  // Apply smoothing
+  if (globalAverages.dates.length > 2) {
+    smoothData(globalAverages);
+  }
 
-  sortedDates.forEach(date => {
-    const data = dateMap.get(date);
+  // Return ALL averages for the entire date range
+  // Frontend will handle filtering to the visible date range
+  graphData.averageDates = globalAverages.dates;
+  graphData.averageMistakeFrequency = globalAverages.mistakeFrequency;
+  graphData.averageAnswerRate = globalAverages.answerRate;
+}
 
-    const avgMistakeFreq = data.mistakeFrequencies.length > 0
-      ? Math.round(
-          data.mistakeFrequencies.reduce((a, b) => a + b, 0) /
-          data.mistakeFrequencies.length
-        )
-      : 0;
+// smoothData function stays the same
+function smoothData(data) {
+  const SMOOTH_WINDOW = 3;
+  if (data.mistakeFrequency.length < SMOOTH_WINDOW) return;
 
-    const avgAnswerRate = data.answerRates.length > 0
-      ? Number(
-          (
-            data.answerRates.reduce((a, b) => a + b, 0) /
-            data.answerRates.length
-          ).toFixed(1)
-        )
-      : 0;
+  const smoothMistake = [];
+  const smoothAnswerRate = [];
 
-    graphData.averageDates.push(date);
-    graphData.averageMistakeFrequency.push(avgMistakeFreq);
-    graphData.averageAnswerRate.push(avgAnswerRate);
-  });
+  for (let i = 0; i < data.mistakeFrequency.length; i++) {
+    const start = Math.max(0, i - Math.floor(SMOOTH_WINDOW / 2));
+    const end = Math.min(data.mistakeFrequency.length, start + SMOOTH_WINDOW);
+
+    const mistakeWindow = data.mistakeFrequency.slice(start, end);
+    const answerRateWindow = data.answerRate.slice(start, end);
+
+    smoothMistake.push(
+      Math.round(mistakeWindow.reduce((a, b) => a + b, 0) / mistakeWindow.length)
+    );
+    smoothAnswerRate.push(
+      Number((answerRateWindow.reduce((a, b) => a + b, 0) / answerRateWindow.length).toFixed(1))
+    );
+  }
+
+  data.mistakeFrequency = smoothMistake;
+  data.answerRate = smoothAnswerRate;
 }
 
 export default router

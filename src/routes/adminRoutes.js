@@ -17,7 +17,90 @@ async function checkAdmin(userId, res) {
     return true;
 }
 
-// Helper function to clean up account type data
+// Add these helper functions after the imports and before the routes
+
+// Safely parse JSON with fallback
+function safeJSONParse(jsonString, fallback) {
+    try {
+        const parsed = JSON.parse(jsonString);
+        return parsed !== null && parsed !== undefined ? parsed : fallback;
+    } catch (e) {
+        return fallback;
+    }
+}
+
+// Safely get pet assets structure
+function safePetAssets(petAssetsString) {
+    const parsed = safeJSONParse(petAssetsString, [[], []]);
+    
+    // Ensure it's an array with 2 elements
+    if (!Array.isArray(parsed) || parsed.length !== 2) {
+        return [[], []];
+    }
+    
+    // Ensure both elements are arrays
+    return [
+        Array.isArray(parsed[0]) ? parsed[0] : [],
+        Array.isArray(parsed[1]) ? parsed[1] : []
+    ];
+}
+
+// Safely get pet stats structure
+function safePetStats(petStatsString) {
+    const parsed = safeJSONParse(petStatsString, {});
+    return typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
+// Safely get object assets structure
+function safeObjectAssets(objectAssetsString) {
+    const parsed = safeJSONParse(objectAssetsString, []);
+    return Array.isArray(parsed) ? parsed : [];
+}
+
+// Validate pet structure
+function isValidPet(pet) {
+    if (!Array.isArray(pet) || pet.length !== 2) return false;
+    
+    const [petId, petData] = pet;
+    if (typeof petId !== 'string' && typeof petId !== 'number') return false;
+    if (!Array.isArray(petData) || petData.length !== 2) return false;
+    
+    const [petName, skins] = petData;
+    if (typeof petName !== 'string') return false;
+    if (!Array.isArray(skins)) return false;
+    
+    return true;
+}
+
+// Validate skin structure
+function isValidSkin(skin) {
+    if (!Array.isArray(skin) || skin.length !== 3) return false;
+    
+    const [skinId, skinIndex, equipped] = skin;
+    if (typeof skinId !== 'string' && typeof skinId !== 'number') return false;
+    if (typeof skinIndex !== 'number') return false;
+    if (typeof equipped !== 'boolean') return false;
+    
+    return true;
+}
+
+// Safely get skins from pet
+function getSafeSkinsFromPet(pet) {
+    if (!isValidPet(pet)) return [];
+    
+    const skins = pet[1][1];
+    if (!Array.isArray(skins)) return [];
+    
+    // Filter out invalid skins
+    return skins.filter(isValidSkin);
+}
+
+// Initialize default pet stats
+function getDefaultPetStats() {
+    return [50, 50, 50, 0]; // [happiness, hunger, cleanliness, lastInteractionTime]
+}
+
+// This is already in your code, but let's make sure it's complete:
 async function cleanupAccountTypeData(tx, userId, newAccType) {
     // Delete student task assignments first (before deleting tasks they reference)
     await tx.studentTaskAssignment.deleteMany({ 
@@ -32,10 +115,36 @@ async function cleanupAccountTypeData(tx, userId, newAccType) {
     await tx.teacherStudent.deleteMany({ where: { teacherId: userId } });
     await tx.teacherStudent.deleteMany({ where: { studentId: userId } });
 
+    // Delete task result archives
+    await tx.taskResultArchive.deleteMany({ where: { studentId: userId } });
+
     // If changing away from student, delete student-specific data
     if (newAccType !== 'student') {
+        // Get PetGame ID before deleting
+        const petGame = await tx.petGame.findUnique({
+            where: { studentId: userId },
+            select: { id: true }
+        });
+        
+        // Disconnect MessageGifts from this PetGame
+        if (petGame) {
+            await tx.petGame.update({
+                where: { id: petGame.id },
+                data: {
+                    messaged: {
+                        set: []
+                    }
+                }
+            });
+        }
+        
         await tx.studentInfo.deleteMany({ where: { studentId: userId } });
         await tx.petGame.deleteMany({ where: { studentId: userId } });
+        
+        // Clean up orphaned MessageGifts
+        await tx.messageGift.deleteMany({
+            where: { petGames: { none: {} } }
+        });
     }
 }
 
@@ -144,6 +253,9 @@ router.delete('/user/:id', async (req, res) => {
             // Delete refresh tokens
             await tx.refreshToken.deleteMany({ where: { userId: user.id } });
             
+            // Delete task result archives
+            await tx.taskResultArchive.deleteMany({ where: { studentId: user.id } });
+            
             // Delete task assignments where this user is the student
             await tx.studentTaskAssignment.deleteMany({ where: { studentId: user.id } });
             
@@ -155,6 +267,30 @@ router.delete('/user/:id', async (req, res) => {
             // Delete tasks created by this user (if teacher)
             await tx.teacherTask.deleteMany({ where: { teacherId: user.id } });
             
+            // If this user is a student, check for orphaned teacher tasks
+            if (user.accType === 'student') {
+                // Find all teacher-student relationships for this student
+                const teacherRelations = await tx.teacherStudent.findMany({
+                    where: { studentId: user.id },
+                    select: { teacherId: true }
+                });
+                
+                // For each teacher, check their tasks
+                for (const relation of teacherRelations) {
+                    const teacherTasks = await tx.teacherTask.findMany({
+                        where: { teacherId: relation.teacherId },
+                        include: { studentTasks: true }
+                    });
+                    
+                    // Delete tasks that have no other students
+                    for (const task of teacherTasks) {
+                        if (task.studentTasks.length === 0) {
+                            await tx.teacherTask.delete({ where: { id: task.id } });
+                        }
+                    }
+                }
+            }
+            
             // Delete teacher-student relationships (both as teacher and student)
             await tx.teacherStudent.deleteMany({ 
                 where: { OR: [{ teacherId: user.id }, { studentId: user.id }] } 
@@ -163,8 +299,31 @@ router.delete('/user/:id', async (req, res) => {
             // Delete student info
             await tx.studentInfo.deleteMany({ where: { studentId: user.id } });
             
+            // Get PetGame ID before deleting
+            const petGame = await tx.petGame.findUnique({
+                where: { studentId: user.id },
+                select: { id: true }
+            });
+            
+            // Disconnect MessageGifts from this PetGame
+            if (petGame) {
+                await tx.petGame.update({
+                    where: { id: petGame.id },
+                    data: {
+                        messaged: {
+                            set: []
+                        }
+                    }
+                });
+            }
+            
             // Delete pet game
             await tx.petGame.deleteMany({ where: { studentId: user.id } });
+            
+            // Clean up orphaned MessageGifts (those with no PetGames)
+            await tx.messageGift.deleteMany({
+                where: { petGames: { none: {} } }
+            });
             
             // Finally delete the user
             await tx.user.delete({ where: { id: user.id } });
@@ -191,47 +350,113 @@ router.delete('/inactive', async (req, res) => {
         return res.status(400).json({ message: 'Invalid inactive period' });
     }
 
-    const periodInDays = parseInt(inactivePeriod);
-    const periodInMs = periodInDays * 24 * 60 * 60 * 1000;
-    const dateThreshold = new Date(Date.now() - periodInMs);
+    const periodInMonths = parseInt(inactivePeriod);
+    const dateThreshold = new Date();
+    dateThreshold.setMonth(dateThreshold.getMonth() - periodInMonths);
 
     try {
         const inactiveUsers = await prisma.user.findMany({
             where: {
-                OR: [
-                    { lastLogIn: { lt: dateThreshold } },
-                    { lastLogIn: null }
+                AND: [
+                    { accType: { not: 'admin' } }, // Don't delete admins
+                    {
+                        OR: [
+                            { lastLogIn: { lt: dateThreshold } },
+                            { lastLogIn: null }
+                        ]
+                    }
                 ]
             },
-            select: { id: true }
+            select: { id: true, accType: true }
         });
 
         if (inactiveUsers.length === 0) {
             return res.status(404).json({ 
                 message: 'No inactive users found',
-                inactiveThresholdDays: periodInDays
+                inactiveThresholdMonths: periodInMonths
             });
         }
 
         await prisma.$transaction(async (tx) => {
             for (const user of inactiveUsers) {
+                // Delete refresh tokens
                 await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+                
+                // Delete task result archives
+                await tx.taskResultArchive.deleteMany({ where: { studentId: user.id } });
+                
+                // Delete task assignments where this user is the student
                 await tx.studentTaskAssignment.deleteMany({ where: { studentId: user.id } });
-                await tx.studentTaskAssignment.deleteMany({ where: { task: { teacherId: user.id } } });
+                
+                // Delete task assignments for tasks created by this user (if teacher)
+                await tx.studentTaskAssignment.deleteMany({ 
+                    where: { task: { teacherId: user.id } } 
+                });
+                
+                // Delete tasks created by this user (if teacher)
                 await tx.teacherTask.deleteMany({ where: { teacherId: user.id } });
+                
+                // If this user is a student, check for orphaned teacher tasks
+                if (user.accType === 'student') {
+                    const teacherRelations = await tx.teacherStudent.findMany({
+                        where: { studentId: user.id },
+                        select: { teacherId: true }
+                    });
+                    
+                    for (const relation of teacherRelations) {
+                        const teacherTasks = await tx.teacherTask.findMany({
+                            where: { teacherId: relation.teacherId },
+                            include: { studentTasks: true }
+                        });
+                        
+                        for (const task of teacherTasks) {
+                            if (task.studentTasks.length === 0) {
+                                await tx.teacherTask.delete({ where: { id: task.id } });
+                            }
+                        }
+                    }
+                }
+                
+                // Delete teacher-student relationships
                 await tx.teacherStudent.deleteMany({ 
                     where: { OR: [{ teacherId: user.id }, { studentId: user.id }] } 
                 });
+                
+                // Delete student info
                 await tx.studentInfo.deleteMany({ where: { studentId: user.id } });
+                
+                // Get PetGame ID before deleting
+                const petGame = await tx.petGame.findUnique({
+                    where: { studentId: user.id },
+                    select: { id: true }
+                });
+                
+                // Disconnect MessageGifts from this PetGame
+                if (petGame) {
+                    await tx.petGame.update({
+                        where: { id: petGame.id },
+                        data: {
+                            messaged: {
+                                set: []
+                            }
+                        }
+                    });
+                }
+                
+                // Delete pet game
                 await tx.petGame.deleteMany({ where: { studentId: user.id } });
-                await tx.user.delete({ where: { id: user.id } });
             }
+            
+            // Clean up orphaned MessageGifts (those with no PetGames)
+            await tx.messageGift.deleteMany({
+                where: { petGames: { none: {} } }
+            });
         });
 
         res.json({ 
             message: 'Inactive users deleted successfully',
             deletedCount: inactiveUsers.length,
-            inactiveThresholdDays: periodInDays
+            inactiveThresholdMonths: periodInMonths
         });
 
     } catch (err) {
@@ -467,45 +692,51 @@ router.post('/user/:id/pet', async (req, res) => {
     if (!await checkAdmin(req.userId, res)) return;
     
     const { id } = req.params;
-    const { petId, petName } = req.body;
+    const { petId, petName, defaultSkinId, defaultSkinIndex } = req.body;
 
     if (!petId || !petName) {
         return res.status(400).json({ message: 'Pet ID and name required' });
     }
 
+    if (!defaultSkinId || defaultSkinIndex === undefined) {
+        return res.status(400).json({ message: 'Default skin ID and index required' });
+    }
+
     try {
         const petGame = await prisma.petGame.findFirst({
             where: { studentId: parseInt(id) },
-            select: { id: true, petAssets: true }
+            select: { id: true, petAssets: true, petStats: true }
         });
 
         if (!petGame) {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            petAssets = [[], []];
-        }
-
-        const pets = petAssets[0] || [];
+        const petAssets = safePetAssets(petGame.petAssets);
+        const petStats = safePetStats(petGame.petStats);
+        const pets = petAssets[0];
         
         // Check if pet already exists
-        if (pets.some(pet => pet[0] === petId)) {
+        if (pets.some(pet => isValidPet(pet) && pet[0] === petId)) {
             return res.status(400).json({ message: 'Pet already exists' });
         }
 
-        pets.push([petId, [petName, []]]);
+        // Add pet with default skin equipped
+        pets.push([petId, [petName, [[defaultSkinId, parseInt(defaultSkinIndex), true]]]]);
         petAssets[0] = pets;
+
+        // Initialize pet stats
+        petStats[petId] = getDefaultPetStats();
 
         await prisma.petGame.update({
             where: { id: petGame.id },
-            data: { petAssets: JSON.stringify(petAssets) }
+            data: { 
+                petAssets: JSON.stringify(petAssets),
+                petStats: JSON.stringify(petStats)
+            }
         });
 
-        res.json({ message: 'Pet added successfully' });
+        res.json({ message: 'Pet added successfully with default skin and stats' });
 
     } catch (err) {
         console.error('Error adding pet:', err);
@@ -522,22 +753,18 @@ router.delete('/user/:id/pet/:petId', async (req, res) => {
     try {
         const petGame = await prisma.petGame.findFirst({
             where: { studentId: parseInt(id) },
-            select: { id: true, petAssets: true }
+            select: { id: true, petAssets: true, petStats: true, petOnWalk: true }
         });
 
         if (!petGame) {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            return res.status(400).json({ message: 'Invalid pet assets data' });
-        }
-
-        const pets = petAssets[0] || [];
-        const filteredPets = pets.filter(pet => pet[0] !== petId);
+        const petAssets = safePetAssets(petGame.petAssets);
+        const petStats = safePetStats(petGame.petStats);
+        const pets = petAssets[0];
+        
+        const filteredPets = pets.filter(pet => !isValidPet(pet) || pet[0] !== petId);
 
         if (filteredPets.length === pets.length) {
             return res.status(404).json({ message: 'Pet not found' });
@@ -545,12 +772,25 @@ router.delete('/user/:id/pet/:petId', async (req, res) => {
 
         petAssets[0] = filteredPets;
 
+        // Remove pet stats
+        delete petStats[petId];
+
+        // Clear petOnWalk if this pet was on walk
+        let newPetOnWalk = petGame.petOnWalk || '';
+        if (newPetOnWalk === petId) {
+            newPetOnWalk = '';
+        }
+
         await prisma.petGame.update({
             where: { id: petGame.id },
-            data: { petAssets: JSON.stringify(petAssets) }
+            data: { 
+                petAssets: JSON.stringify(petAssets),
+                petStats: JSON.stringify(petStats),
+                petOnWalk: newPetOnWalk
+            }
         });
 
-        res.json({ message: 'Pet removed successfully' });
+        res.json({ message: 'Pet removed successfully with stats cleanup' });
 
     } catch (err) {
         console.error('Error removing pet:', err);
@@ -579,15 +819,10 @@ router.patch('/user/:id/pet-name', async (req, res) => {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            return res.status(400).json({ message: 'Invalid pet assets data' });
-        }
-
-        const pets = petAssets[0] || [];
-        const petIndex = pets.findIndex(pet => pet[0] === petId);
+        const petAssets = safePetAssets(petGame.petAssets);
+        const pets = petAssets[0];
+        
+        const petIndex = pets.findIndex(pet => isValidPet(pet) && pet[0] === petId);
 
         if (petIndex === -1) {
             return res.status(404).json({ message: 'Pet not found' });
@@ -630,21 +865,16 @@ router.post('/user/:id/pet-skin', async (req, res) => {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            return res.status(400).json({ message: 'Invalid pet assets data' });
-        }
-
-        const pets = petAssets[0] || [];
-        const petIndex = pets.findIndex(pet => pet[0] === petId);
+        const petAssets = safePetAssets(petGame.petAssets);
+        const pets = petAssets[0];
+        
+        const petIndex = pets.findIndex(pet => isValidPet(pet) && pet[0] === petId);
 
         if (petIndex === -1) {
             return res.status(404).json({ message: 'Pet not found' });
         }
 
-        const skins = pets[petIndex][1][1] || [];
+        const skins = getSafeSkinsFromPet(pets[petIndex]);
         
         // Check if skin already exists
         if (skins.some(skin => skin[0] === skinId)) {
@@ -689,21 +919,16 @@ router.delete('/user/:id/pet-skin', async (req, res) => {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            return res.status(400).json({ message: 'Invalid pet assets data' });
-        }
-
-        const pets = petAssets[0] || [];
-        const petIndex = pets.findIndex(pet => pet[0] === petId);
+        const petAssets = safePetAssets(petGame.petAssets);
+        const pets = petAssets[0];
+        
+        const petIndex = pets.findIndex(pet => isValidPet(pet) && pet[0] === petId);
 
         if (petIndex === -1) {
             return res.status(404).json({ message: 'Pet not found' });
         }
 
-        const skins = pets[petIndex][1][1] || [];
+        const skins = getSafeSkinsFromPet(pets[petIndex]);
         const filteredSkins = skins.filter(skin => skin[0] !== skinId);
 
         if (filteredSkins.length === skins.length) {
@@ -747,21 +972,17 @@ router.post('/user/:id/consumable', async (req, res) => {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            petAssets = [[], []];
-        }
-
-        const consumables = petAssets[1] || [];
+        const petAssets = safePetAssets(petGame.petAssets);
+        const consumables = petAssets[1];
         
         // Check if item already exists
-        const existingIndex = consumables.findIndex(item => item[0] === parseInt(itemId));
+        const existingIndex = consumables.findIndex(item => 
+            Array.isArray(item) && item.length >= 2 && item[0] === parseInt(itemId)
+        );
         
         if (existingIndex !== -1) {
             // Add to existing quantity
-            consumables[existingIndex][1] += parseInt(quantity);
+            consumables[existingIndex][1] = (consumables[existingIndex][1] || 0) + parseInt(quantity);
         } else {
             // Add new consumable
             consumables.push([parseInt(itemId), parseInt(quantity)]);
@@ -798,15 +1019,12 @@ router.delete('/user/:id/consumable/:itemId', async (req, res) => {
             return res.status(404).json({ message: 'Pet game not found' });
         }
 
-        let petAssets = [[], []];
-        try {
-            petAssets = JSON.parse(petGame.petAssets);
-        } catch (e) {
-            return res.status(400).json({ message: 'Invalid pet assets data' });
-        }
-
-        const consumables = petAssets[1] || [];
-        const filteredConsumables = consumables.filter(item => item[0] !== parseInt(itemId));
+        const petAssets = safePetAssets(petGame.petAssets);
+        const consumables = petAssets[1];
+        
+        const filteredConsumables = consumables.filter(item => 
+            !Array.isArray(item) || item.length < 2 || item[0] !== parseInt(itemId)
+        );
 
         if (filteredConsumables.length === consumables.length) {
             return res.status(404).json({ message: 'Consumable not found' });
@@ -1075,11 +1293,16 @@ router.post('/gift', async (req, res) => {
 
     try {
         const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
             select: { id: true, objectAssets: true }
         });
 
         if (petGames.length === 0) {
-            return res.status(404).json({ message: 'No pet game entries found' });
+            return res.status(404).json({ message: 'No student pet game entries found' });
         }
 
         const updates = petGames.map(petGame => {
@@ -1101,7 +1324,7 @@ router.post('/gift', async (req, res) => {
         await prisma.$transaction(updates);
 
         res.json({ 
-            message: 'Gift added successfully',
+            message: 'Gift added successfully to all students',
             updatedCount: petGames.length,
             gift: { itemId, coordinates }
         });
@@ -1112,7 +1335,7 @@ router.post('/gift', async (req, res) => {
     }
 });
 
-// Modify money for all students (add or subtract)
+// Modify money for all students - UPDATE
 router.post('/modify-money', async (req, res) => {
     if (!await checkAdmin(req.userId, res)) return;
     
@@ -1126,11 +1349,16 @@ router.post('/modify-money', async (req, res) => {
 
     try {
         const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
             select: { id: true, money: true }
         });
 
         if (petGames.length === 0) {
-            return res.status(404).json({ message: 'No pet game entries found' });
+            return res.status(404).json({ message: 'No student pet game entries found' });
         }
 
         const updates = petGames.map(petGame => {
@@ -1147,7 +1375,7 @@ router.post('/modify-money', async (req, res) => {
         await prisma.$transaction(updates);
 
         res.json({ 
-            message: amount > 0 ? 'Money added successfully' : 'Money subtracted successfully',
+            message: amount > 0 ? 'Money added successfully to all students' : 'Money subtracted successfully from all students',
             updatedCount: petGames.length,
             amount: parseInt(amount)
         });
@@ -1158,7 +1386,7 @@ router.post('/modify-money', async (req, res) => {
     }
 });
 
-// Remove item from all users (with optional compensation)
+// Remove item from all users - UPDATE
 router.delete('/remove-item/:itemId', async (req, res) => {
     if (!await checkAdmin(req.userId, res)) return;
     
@@ -1174,11 +1402,16 @@ router.delete('/remove-item/:itemId', async (req, res) => {
 
     try {
         const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
             select: { id: true, objectAssets: true, money: true }
         });
 
         if (petGames.length === 0) {
-            return res.status(404).json({ message: 'No pet game entries found' });
+            return res.status(404).json({ message: 'No student pet game entries found' });
         }
 
         let usersAffected = 0;
@@ -1223,7 +1456,7 @@ router.delete('/remove-item/:itemId', async (req, res) => {
         await prisma.$transaction(updates);
 
         res.json({ 
-            message: 'Item removed successfully',
+            message: 'Item removed successfully from all students',
             usersAffected,
             itemsRemoved,
             itemId: targetItemId,
@@ -1237,7 +1470,7 @@ router.delete('/remove-item/:itemId', async (req, res) => {
     }
 });
 
-// Add consumable to all users (bulk)
+// Add consumable to all users (bulk) - UPDATE
 router.post('/bulk/consumable', async (req, res) => {
     if (!await checkAdmin(req.userId, res)) return;
     
@@ -1251,11 +1484,16 @@ router.post('/bulk/consumable', async (req, res) => {
 
     try {
         const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
             select: { id: true, petAssets: true }
         });
 
         if (petGames.length === 0) {
-            return res.status(404).json({ message: 'No pet game entries found' });
+            return res.status(404).json({ message: 'No student pet game entries found' });
         }
 
         const updates = petGames.map(petGame => {
@@ -1286,7 +1524,7 @@ router.post('/bulk/consumable', async (req, res) => {
         await prisma.$transaction(updates);
 
         res.json({ 
-            message: 'Consumable added to all users successfully',
+            message: 'Consumable added to all students successfully',
             updatedCount: petGames.length,
             consumable: { itemId: parseInt(itemId), quantity: parseInt(quantity) }
         });
@@ -1297,7 +1535,7 @@ router.post('/bulk/consumable', async (req, res) => {
     }
 });
 
-// Remove consumable from all users (bulk with optional compensation)
+// Remove consumable from all users (bulk) - UPDATE
 router.delete('/bulk/consumable/:itemId', async (req, res) => {
     if (!await checkAdmin(req.userId, res)) return;
     
@@ -1313,11 +1551,16 @@ router.delete('/bulk/consumable/:itemId', async (req, res) => {
 
     try {
         const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
             select: { id: true, petAssets: true, money: true }
         });
 
         if (petGames.length === 0) {
-            return res.status(404).json({ message: 'No pet game entries found' });
+            return res.status(404).json({ message: 'No student pet game entries found' });
         }
 
         let usersAffected = 0;
@@ -1363,7 +1606,7 @@ router.delete('/bulk/consumable/:itemId', async (req, res) => {
         await prisma.$transaction(updates);
 
         res.json({ 
-            message: 'Consumable removed from all users successfully',
+            message: 'Consumable removed from all students successfully',
             usersAffected,
             itemId: targetItemId,
             totalItemsRemoved,
@@ -1921,5 +2164,568 @@ router.post('/cleanExpiredMessages', async (req, res) => {
     }
 });
 
+
+// Get task archive statistics
+router.get('/task-archives/stats', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    try {
+        // Get total count
+        const totalRecords = await prisma.taskResultArchive.count();
+        
+        if (totalRecords === 0) {
+            return res.json({
+                totalRecords: 0,
+                earliestDate: null,
+                sizeInBytes: 0,
+                distribution: []
+            });
+        }
+        
+        // Get earliest date
+        const earliest = await prisma.taskResultArchive.findFirst({
+            orderBy: { date: 'asc' },
+            select: { date: true }
+        });
+        
+        // Get all records to calculate size and distribution
+        const allRecords = await prisma.taskResultArchive.findMany({
+            select: { 
+                date: true,
+                correct: true,
+                mistakes: true,
+                totalAnswers: true,
+                answerRate: true
+            }
+        });
+        
+        // Calculate approximate size (rough estimate)
+        // Each record: 4 integers (4 bytes each) + 1 float (4 bytes) + date (8 bytes) = ~28 bytes + overhead
+        const estimatedSizePerRecord = 50; // bytes (including overhead)
+        const totalSizeBytes = totalRecords * estimatedSizePerRecord;
+        
+        // Calculate distribution in 2-month intervals going back 24 months
+        const now = new Date();
+        const distribution = [];
+        
+        for (let months = 2; months <= 24; months += 2) {
+            const cutoffDate = new Date(now);
+            cutoffDate.setMonth(cutoffDate.getMonth() - months);
+            
+            const countWithinPeriod = allRecords.filter(
+                record => new Date(record.date) >= cutoffDate
+            ).length;
+            
+            const percentage = totalRecords > 0 
+                ? Math.round((countWithinPeriod / totalRecords) * 100) 
+                : 0;
+            
+            distribution.push({
+                months,
+                count: countWithinPeriod,
+                percentage
+            });
+        }
+        
+        res.json({
+            totalRecords,
+            earliestDate: earliest.date,
+            sizeInBytes: totalSizeBytes,
+            sizeInKB: (totalSizeBytes / 1024).toFixed(2),
+            sizeInMB: (totalSizeBytes / (1024 * 1024)).toFixed(2),
+            distribution
+        });
+        
+    } catch (err) {
+        console.error('Error fetching task archive stats:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Delete old task archives
+router.delete('/task-archives/cleanup', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    const { monthsToKeep } = req.body;
+    
+    if (!monthsToKeep || isNaN(monthsToKeep) || monthsToKeep < 1) {
+        return res.status(400).json({ message: 'Invalid months value. Must be a positive number.' });
+    }
+    
+    try {
+        const cutoffDate = new Date();
+        cutoffDate.setMonth(cutoffDate.getMonth() - parseInt(monthsToKeep));
+        
+        const deletedRecords = await prisma.taskResultArchive.deleteMany({
+            where: {
+                date: {
+                    lt: cutoffDate
+                }
+            }
+        });
+        
+        res.json({
+            message: 'Old task archives deleted successfully',
+            deletedCount: deletedRecords.count,
+            cutoffDate,
+            monthsKept: parseInt(monthsToKeep)
+        });
+        
+    } catch (err) {
+        console.error('Error deleting task archives:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Get task library statistics
+router.get('/task-library/stats', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    try {
+        // Get total count of tasks in TaskLibrary
+        const totalTasks = await prisma.taskLibrary.count();
+        
+        // Get count of tasks that are used (have TeacherTasks or TaskResultArchives)
+        const usedTasks = await prisma.taskLibrary.findMany({
+            where: {
+                OR: [
+                    { tasks: { some: {} } },
+                    { taskResultArchives: { some: {} } }
+                ]
+            },
+            select: { id: true }
+        });
+        
+        const unusedTasks = totalTasks - usedTasks.length;
+        
+        res.json({
+            totalTasks,
+            usedTasks: usedTasks.length,
+            unusedTasks
+        });
+        
+    } catch (err) {
+        console.error('Error fetching task library stats:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Delete unused tasks from TaskLibrary
+router.delete('/task-library/cleanup', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    try {
+        // Find all task library entries that have no TeacherTasks and no TaskResultArchives
+        const unusedTasks = await prisma.taskLibrary.findMany({
+            where: {
+                AND: [
+                    { tasks: { none: {} } },
+                    { taskResultArchives: { none: {} } }
+                ]
+            },
+            select: { id: true }
+        });
+        
+        if (unusedTasks.length === 0) {
+            return res.json({
+                message: 'No unused tasks to delete',
+                deletedCount: 0
+            });
+        }
+        
+        // Delete the unused tasks
+        const deletedTasks = await prisma.taskLibrary.deleteMany({
+            where: {
+                id: {
+                    in: unusedTasks.map(task => task.id)
+                }
+            }
+        });
+        
+        res.json({
+            message: 'Unused task library entries deleted successfully',
+            deletedCount: deletedTasks.count
+        });
+        
+    } catch (err) {
+        console.error('Error cleaning up task library:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Remove pet from all users (bulk) - UPDATE
+router.delete('/bulk/pet/:petId', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    const { petId } = req.params;
+    const { compensation } = req.body;
+
+    if (!petId) {
+        return res.status(400).json({ message: 'Pet ID required' });
+    }
+
+    const compensationAmount = compensation ? parseInt(compensation) : 0;
+
+    try {
+        const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
+            select: { id: true, petAssets: true, money: true }
+        });
+
+        if (petGames.length === 0) {
+            return res.status(404).json({ message: 'No student pet game entries found' });
+        }
+
+        let usersAffected = 0;
+        let petsRemoved = 0;
+        let totalCompensation = 0;
+
+        const updates = petGames.map(petGame => {
+            let petAssets = [[], []];
+            try {
+                petAssets = JSON.parse(petGame.petAssets);
+            } catch (e) {
+                petAssets = [[], []];
+            }
+
+            const pets = petAssets[0] || [];
+            const originalLength = pets.length;
+            const filteredPets = pets.filter(pet => pet[0] !== petId);
+
+            let newMoney = Number(petGame.money);
+            
+            if (filteredPets.length < originalLength) {
+                usersAffected++;
+                petsRemoved += (originalLength - filteredPets.length);
+                if (compensationAmount > 0) {
+                    const removed = originalLength - filteredPets.length;
+                    newMoney += compensationAmount * removed;
+                    totalCompensation += compensationAmount * removed;
+                }
+            }
+
+            petAssets[0] = filteredPets;
+
+            return prisma.petGame.update({
+                where: { id: petGame.id },
+                data: { 
+                    petAssets: JSON.stringify(petAssets),
+                    money: newMoney
+                }
+            });
+        });
+
+        await prisma.$transaction(updates);
+
+        res.json({ 
+            message: 'Pet removed from all students successfully',
+            usersAffected,
+            petsRemoved,
+            petId,
+            compensationPerPet: compensationAmount,
+            totalCompensation
+        });
+
+    } catch (err) {
+        console.error('Error removing pet from all:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Remove skin from all users (bulk) - UPDATE
+router.delete('/bulk/skin/:skinId', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    const { skinId } = req.params;
+    const { compensation, backupSkinId, backupSkinIndex } = req.body;
+
+    if (!skinId) {
+        return res.status(400).json({ message: 'Skin ID required' });
+    }
+
+    const compensationAmount = compensation ? parseInt(compensation) : 0;
+    const hasBackup = backupSkinId && backupSkinIndex !== undefined;
+
+    try {
+        const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
+            select: { id: true, petAssets: true, money: true }
+        });
+
+        if (petGames.length === 0) {
+            return res.status(404).json({ message: 'No student pet game entries found' });
+        }
+
+        let usersAffected = 0;
+        let skinsRemoved = 0;
+        let totalCompensation = 0;
+        let backupsAdded = 0;
+
+        const updates = petGames.map(petGame => {
+            let petAssets = [[], []];
+            try {
+                petAssets = JSON.parse(petGame.petAssets);
+            } catch (e) {
+                petAssets = [[], []];
+            }
+
+            const pets = petAssets[0] || [];
+            let userSkinsRemoved = 0;
+            let userHadSkinRemoved = false;
+
+            // Process each pet
+            for (let i = 0; i < pets.length; i++) {
+                const pet = pets[i];
+                const skins = pet[1][1] || [];
+                const originalSkinsLength = skins.length;
+                
+                // Filter out the target skin
+                const filteredSkins = skins.filter(skin => skin[0] !== skinId);
+                const removedCount = originalSkinsLength - filteredSkins.length;
+                
+                if (removedCount > 0) {
+                    userSkinsRemoved += removedCount;
+                    userHadSkinRemoved = true;
+                    
+                    // If no skins left and backup provided, add backup skin
+                    if (filteredSkins.length === 0 && hasBackup) {
+                        filteredSkins.push([backupSkinId, parseInt(backupSkinIndex), true]);
+                        backupsAdded++;
+                    }
+                    
+                    // Update the pet's skins
+                    pets[i][1][1] = filteredSkins;
+                }
+            }
+
+            let newMoney = Number(petGame.money);
+            
+            if (userHadSkinRemoved) {
+                usersAffected++;
+                skinsRemoved += userSkinsRemoved;
+                if (compensationAmount > 0) {
+                    newMoney += compensationAmount * userSkinsRemoved;
+                    totalCompensation += compensationAmount * userSkinsRemoved;
+                }
+            }
+
+            petAssets[0] = pets;
+
+            return prisma.petGame.update({
+                where: { id: petGame.id },
+                data: { 
+                    petAssets: JSON.stringify(petAssets),
+                    money: newMoney
+                }
+            });
+        });
+
+        await prisma.$transaction(updates);
+
+        res.json({ 
+            message: 'Skin removed from all students successfully',
+            usersAffected,
+            skinsRemoved,
+            skinId,
+            backupsAdded,
+            compensationPerSkin: compensationAmount,
+            totalCompensation,
+            backupSkin: hasBackup ? { skinId: backupSkinId, skinIndex: backupSkinIndex } : null
+        });
+
+    } catch (err) {
+        console.error('Error removing skin from all:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Add pet to all users (bulk)
+router.post('/bulk/pet', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    const { petId, petName, defaultSkinId, defaultSkinIndex } = req.body;
+
+    if (!petId || !petName) {
+        return res.status(400).json({ 
+            message: 'Pet ID and name required' 
+        });
+    }
+
+    if (!defaultSkinId || defaultSkinIndex === undefined) {
+        return res.status(400).json({ 
+            message: 'Default skin ID and index required' 
+        });
+    }
+
+    try {
+        // Only get pet games for students
+        const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
+            select: { id: true, petAssets: true }
+        });
+
+        if (petGames.length === 0) {
+            return res.status(404).json({ message: 'No student pet game entries found' });
+        }
+
+        let usersAffected = 0;
+        let petsAdded = 0;
+        let skippedDuplicates = 0;
+
+        const updates = petGames.map(petGame => {
+            let petAssets = [[], []];
+            try {
+                petAssets = JSON.parse(petGame.petAssets);
+            } catch (e) {
+                petAssets = [[], []];
+            }
+
+            const pets = petAssets[0] || [];
+            
+            // Check if pet already exists
+            if (pets.some(pet => pet[0] === petId)) {
+                skippedDuplicates++;
+                return prisma.petGame.update({
+                    where: { id: petGame.id },
+                    data: { petAssets: JSON.stringify(petAssets) }
+                });
+            }
+
+            // Add new pet with default skin equipped
+            pets.push([petId, [petName, [[defaultSkinId, parseInt(defaultSkinIndex), true]]]]);
+            petAssets[0] = pets;
+            usersAffected++;
+            petsAdded++;
+
+            return prisma.petGame.update({
+                where: { id: petGame.id },
+                data: { petAssets: JSON.stringify(petAssets) }
+            });
+        });
+
+        await prisma.$transaction(updates);
+
+        res.json({ 
+            message: 'Pet added to all students successfully',
+            usersAffected,
+            petsAdded,
+            skippedDuplicates,
+            pet: { petId, petName, defaultSkin: { skinId: defaultSkinId, skinIndex: defaultSkinIndex } }
+        });
+
+    } catch (err) {
+        console.error('Error adding pet to all:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Add skin to all pets of specific type (bulk) - UPDATE
+router.post('/bulk/skin', async (req, res) => {
+    if (!await checkAdmin(req.userId, res)) return;
+    
+    const { targetPetId, skinId, skinIndex, equipped } = req.body;
+
+    if (!targetPetId || !skinId || skinIndex === undefined) {
+        return res.status(400).json({ 
+            message: 'Target pet ID, skin ID, and skin index required' 
+        });
+    }
+
+    try {
+        const petGames = await prisma.petGame.findMany({
+            where: {
+                student: {
+                    accType: 'student'
+                }
+            },
+            select: { id: true, petAssets: true }
+        });
+
+        if (petGames.length === 0) {
+            return res.status(404).json({ message: 'No student pet game entries found' });
+        }
+
+        let usersAffected = 0;
+        let skinsAdded = 0;
+        let skippedDuplicates = 0;
+        let petsNotFound = 0;
+
+        const updates = petGames.map(petGame => {
+            let petAssets = [[], []];
+            try {
+                petAssets = JSON.parse(petGame.petAssets);
+            } catch (e) {
+                petAssets = [[], []];
+            }
+
+            const pets = petAssets[0] || [];
+            let userHadSkinAdded = false;
+            let foundTargetPet = false;
+
+            // Process each pet
+            for (let i = 0; i < pets.length; i++) {
+                const pet = pets[i];
+                
+                // Only add skin to matching pet type
+                if (pet[0] === targetPetId) {
+                    foundTargetPet = true;
+                    const skins = pet[1][1] || [];
+                    
+                    // Check if skin already exists
+                    if (skins.some(skin => skin[0] === skinId)) {
+                        skippedDuplicates++;
+                        continue;
+                    }
+                    
+                    // Add new skin
+                    skins.push([skinId, parseInt(skinIndex), equipped ? true : false]);
+                    pets[i][1][1] = skins;
+                    skinsAdded++;
+                    userHadSkinAdded = true;
+                }
+            }
+
+            if (foundTargetPet && userHadSkinAdded) {
+                usersAffected++;
+            } else if (!foundTargetPet) {
+                petsNotFound++;
+            }
+
+            petAssets[0] = pets;
+
+            return prisma.petGame.update({
+                where: { id: petGame.id },
+                data: { petAssets: JSON.stringify(petAssets) }
+            });
+        });
+
+        await prisma.$transaction(updates);
+
+        res.json({ 
+            message: 'Skin added to all matching pets successfully for students',
+            usersAffected,
+            skinsAdded,
+            skippedDuplicates,
+            petsNotFound,
+            skin: { targetPetId, skinId, skinIndex, equipped }
+        });
+
+    } catch (err) {
+        console.error('Error adding skin to all:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 
 export default router;
