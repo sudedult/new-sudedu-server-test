@@ -569,13 +569,13 @@ router.post('/long-term', async (req, res) => {
   try {
     const userId = req.userId;
     const { records } = req.body;
-    
+
     if (!records || !Array.isArray(records)) {
       return res.sendStatus(400); // Bad Request
     }
 
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setUTCHours(0, 0, 0, 0);
 
     // Process each record
     for (const record of records) {
@@ -609,7 +609,17 @@ router.post('/long-term', async (req, res) => {
       });
 
       if (existing) {
-        // Update existing record
+        // Convert Prisma Decimal to number properly
+        const existingCorrect = parseFloat(existing.correct.toString());
+        const existingAnswerRate = parseFloat(existing.answerRate.toString());
+        
+        const calculatedValues = {
+          correct: existingCorrect + correct,
+          mistakes: existing.mistakes + mistakes,
+          totalAnswers: existing.totalAnswers + totalAnswers,
+          answerRate: Number(((existingAnswerRate + answerRate) / 2).toFixed(1))
+        };
+        
         await prisma.taskResultArchive.update({
           where: {
             studentId_taskLibraryId_date: {
@@ -618,15 +628,10 @@ router.post('/long-term', async (req, res) => {
               date: today,
             },
           },
-          data: {
-            correct: existing.correct + correct,
-            mistakes: existing.mistakes + mistakes,
-            totalAnswers: existing.totalAnswers + totalAnswers,
-            answerRate: (existing.answerRate + answerRate) / 2,
-          },
+          data: calculatedValues,
         });
       } else {
-        // Create new record
+        // Create new record with rounded answerRate
         await prisma.taskResultArchive.create({
           data: {
             studentId: userId,
@@ -634,7 +639,7 @@ router.post('/long-term', async (req, res) => {
             correct,
             mistakes,
             totalAnswers,
-            answerRate,
+            answerRate: Number(answerRate.toFixed(1)),
             date: today,
           },
         });
@@ -643,7 +648,6 @@ router.post('/long-term', async (req, res) => {
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error(err);
     return res.sendStatus(500);
   }
 });

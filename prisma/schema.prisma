@@ -95,12 +95,12 @@ model StudentInfo {
 model PetGame {
   id           Int      @id @default(autoincrement())
   studentId    Int      @unique
-  money        Decimal  @default(0.0) @db.Decimal(8,1)
+  money        Decimal  @default(80.0) @db.Decimal(8,1)
   roomLayout   Int      @default(1)
-  objectAssets String   @default("[]")
-  petAssets    String   @default("[[], []]")
-  petStats     String   @default("{}")
-  taxes        String   @default("[]")
+  objectAssets String @default("[[2,[5,33]],[3,[1,33]]]")
+  petAssets    String @default("[[[\"cat-1\",[\"Pūkis\",[[\"cat-1-1\",0,true]]]]],[]]")
+  petStats     String @default("{\"cat-1\":[1,1,1,0]}")
+  taxes        String @default("[0,0]")
   petOnWalk    String   @default("")
   messaged     MessageGift[] @relation("PetGameMessageGifts")
 
@@ -132,7 +132,7 @@ model TaskResultArchive {
   id             Int        @id @default(autoincrement())
   studentId      Int
   taskLibraryId  Int
-  correct        Int        @db.SmallInt @default(0)
+  correct        Decimal    @db.Decimal(5,2) @default(0)
   mistakes       Int        @db.SmallInt @default(0)
   totalAnswers   Int        @db.SmallInt @default(0)
   answerRate     Float      @db.Real     @default(0)

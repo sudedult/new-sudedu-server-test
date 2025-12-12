@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "TaskResultArchive" ALTER COLUMN "correct" SET DEFAULT 0,
+ALTER COLUMN "correct" SET DATA TYPE DECIMAL(5,2);
