@@ -188,15 +188,29 @@ router.post('/register', async (req, res) => {
       if (!existingUser.emailVerified) {
         const token = jwt.sign({ userId: existingUser.id }, process.env.EMAIL_SECRET, { expiresIn: '1d' });
         const link = `https://www.sudedu.lt/test/LT/verify-email.html?token=${token}`;
-        const emailSent = await sendEmail(username, 'Verify your email', `<a href="${link}">Verify your account</a>`);
+        const emailBodyVerify = `
+          <!DOCTYPE html>
+          <html>
+
+          <body style="margin:0;padding:20px;font-family:-apple-system,sans-serif;background:linear-gradient(135deg,#ffbf9c,#ffc074);text-align:center">
+              <div style="max-width:420px;margin:0 auto;background:rgba(255,255,255,.95);border-radius:20px;padding:32px 24px;box-shadow:0 4px 20px rgba(0,0,0,.1)">
+                  <h2 style="margin:0 0 16px;color:#2c3e50;font-size:1.4rem;font-weight:700">El. pašto patvirtinimas</h2>
+                  <p style="margin:0 0 24px;color:#666;font-size:1rem;line-height:1.5">Patvirtinkite savo el. pašto adresą <span style="font-weight: 800;">sudedu<span style="display:none;">&#8203;</span>.lt</span> paskyrai</p><a href="${link}" style="display:inline-block;padding:12px 24px;background:linear-gradient(135deg,#40c9a9,#32ac93);color:#fff;text-decoration:none;border-radius:25px;font-weight:600;font-size:1.1rem;letter-spacing:.5px">PATVIRTINTI</a>
+              </div>
+          </body>
+
+          </html>
+        `
+        const emailSent = await sendEmail(username, 'El. pašto adreso patvirtinimas', emailBodyVerify);
+
         if (!emailSent) {
           return res.status(500).json({ code: CODES.ERROR_SERVER, message: 'Failed to send email' });
         }
-        return res.json({ code: CODES.REG_RESEND });
-      } else {
-        return res.status(400).json({ code: CODES.REG_EXISTS });
+          return res.json({ code: CODES.REG_RESEND });
+        } else {
+          return res.status(400).json({ code: CODES.REG_EXISTS });
+        }
       }
-    }
 
     const user = await prisma.user.create({
       data: {
